@@ -5,17 +5,22 @@
 #include <BLEUtils.h>
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
+#include <ArduinoJson.h>  // Einschließen der ArduinoJson-Bibliothek
 
-const char* ssid = "YOUR_SSID";
-const char* password = "YOUR_PASSWORD";
+const char* ssid = "ssid";
+const char* password = "pass";
 const char* www_username = "admin";
-const char* www_password = "admin";
+const char* www_password = "pass";
 
 WebServer server(80);
 BLEScan* pBLEScan;
-String scanResults;
+
+// Verwenden eines DynamicJsonDocument anstelle eines String für scanResults
+DynamicJsonDocument doc(2048);
+JsonArray scanResults = doc.to<JsonArray>();
+
 unsigned long lastScanTime = 0;
-int scanInterval = 5000; // Scan interval in milliseconds
+int scanInterval = 10000; // Scan interval in milliseconds
 String restEndpoint = "http://example.com/endpoint"; // REST API Endpoint
 int sendInterval = 10000; // Send interval in milliseconds
 unsigned long lastSendTime = 0;
@@ -25,17 +30,11 @@ String lastHttpResult = ""; // Last HTTP response content
 
 class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
     void onResult(BLEAdvertisedDevice advertisedDevice) override {
-        char temp[512];
-        String deviceName = "Unknown";
-        if (advertisedDevice.haveName()) {
-            deviceName = advertisedDevice.getName().c_str();
-        }
-        sprintf(temp, "<tr><td>%s</td><td>%s</td><td>%d</td><td>%.2f</td></tr>",
-                advertisedDevice.getAddress().toString().c_str(),
-                deviceName.c_str(),
-                advertisedDevice.getRSSI(),
-                calculateDistance(advertisedDevice.getRSSI()));
-        scanResults += String(temp);
+        JsonObject obj = scanResults.createNestedObject();
+        obj["device"] = advertisedDevice.getAddress().toString();
+        obj["name"] = advertisedDevice.haveName() ? advertisedDevice.getName().c_str() : "Unknown";
+        obj["rssi"] = advertisedDevice.getRSSI();
+        obj["distance"] = calculateDistance(advertisedDevice.getRSSI());
     }
 
     static float calculateDistance(int rssi) {
@@ -97,7 +96,7 @@ void setup() {
 
 void loop() {
     if (millis() - lastScanTime > scanInterval) {
-        scanResults = "<tr><th>Geräte-ID</th><th>Name</th><th>Empfangsstärke (RSSI)</th><th>Entfernung (m)</th></tr>";
+        scanResults.clear(); // Lösche alte Ergebnisse vor einem neuen Scan
         BLEScanResults foundDevices = pBLEScan->start(5, false);
         lastScanTime = millis();
     }
@@ -112,9 +111,14 @@ void loop() {
 
 String generateWebPage() {
     String page = "<html><head><title>BLE Scanner</title>";
-    page += "<style>table {width: 100%; border-collapse: collapse;} th, td {border: 1px solid black; padding: 8px; text-align: left;} th {background-color: #f2f2f2;} #status {margin-top: 20px;}</style>";
+    page += "<style>table {width: 80%; border-collapse: collapse;} th, td {border: 1px solid black; padding: 8px; text-align: left;} th {background-color: #f2f2f2;} #status {margin-top: 20px;}</style>";
+    page += "<meta http-equiv='content-type' content='text/html; charset=utf-8'>";
     page += "</head><body>";
-    page += "<h1>Scan Results</h1><table>" + scanResults + "</table>";
+    page += "<h1>Scan Results</h1><table>";
+    for (JsonObject obj : scanResults) {
+        page += "<tr><td>" + String((const char*)obj["device"]) + "</td><td>" + String((const char*)obj["name"]) + "</td><td>" + String(obj["rssi"].as<int>()) + "</td><td>" + String(obj["distance"].as<float>(), 2) + "</td></tr>";
+    }
+    page += "</table>";
     page += "<div id='status'><h2>REST Send Status</h2>";
     page += "Letzter Sendestatus: " + String(lastHttpResponseCode) + "<br>";
     page += "Letzte gesendete Daten: <pre>" + lastSentData + "</pre></div>";
@@ -140,8 +144,9 @@ void sendBLEDataToEndpoint() {
         HTTPClient http;
         http.begin(restEndpoint);
         http.addHeader("Content-Type", "application/json");
-        String jsonData = "{\"data\": \"" + scanResults + "\"}";
-        lastSentData = jsonData; // Store the last sent data
+        String jsonData;
+        serializeJson(doc, jsonData); // Konvertiere das JsonArray zu einem String
+        lastSentData = jsonData; // Speichere die zuletzt gesendeten Daten
         int httpResponseCode = http.POST(jsonData);
         lastHttpResponseCode = httpResponseCode;
         lastHttpResult = http.getString();
